@@ -3,7 +3,7 @@ name: Try to Create OCI VM
 on:
   schedule:
     # Runs every 10 minutes — persistent retry
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 env:
