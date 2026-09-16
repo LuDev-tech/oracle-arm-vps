@@ -1,10 +1,14 @@
 name: Try to Create OCI VM
 
 on:
-  schedule:
-    # Runs every 10 minutes — persistent retry
-    - cron: "*/5 * * * *"
   workflow_dispatch:
+  # Backup trigger. The job itself loops every 5 minutes for nearly 6 hours.
+  schedule:
+    - cron: "0 */6 * * *"
+
+concurrency:
+  group: oracle-arm-vps-launch
+  cancel-in-progress: false
 
 env:
   COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
@@ -21,82 +25,83 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - name: Cache pip packages
-        id: cache-pip
         uses: actions/cache@v4
         with:
           path: ~/.local
           key: ${{ runner.os }}-pip-oci-cli-v1
 
-      - name: Add OCI CLI to path
-        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Setup OCI CLI and Try to Create VM
-        id: create_vm
-        continue-on-error: true
+      - name: Install OCI CLI
         run: |
-          set -o pipefail
-
           pip install oci-cli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-          mkdir -p ~/.oci
-          printf '%s' "${{ secrets.OCI_CLI_KEY_B64 }}" | base64 --decode > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
-
-          echo "[DEFAULT]" > ~/.oci/config
-          echo "user=${{ secrets.OCI_CLI_USER }}" >> ~/.oci/config
-          echo "tenancy=${{ secrets.OCI_CLI_TENANCY }}" >> ~/.oci/config
-          echo "fingerprint=${{ secrets.OCI_CLI_FINGERPRINT }}" >> ~/.oci/config
-          echo "key_file=~/.oci/oci_api_key.pem" >> ~/.oci/config
-          echo "region=${{ secrets.OCI_CLI_REGION }}" >> ~/.oci/config
-
-          echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/my_ssh_key.pub
-
-          OCI_OUTPUT=$(oci compute instance launch \
-            --compartment-id "$COMPARTMENT_ID" \
-            --availability-domain "$AD_NAME" \
-            --shape "VM.Standard.A1.Flex" \
-            --shape-config '{"ocpus":2,"memoryInGBs":12}' \
-            --subnet-id "$SUBNET_ID" \
-            --image-id "$IMAGE_ID" \
-            --ssh-authorized-keys-file "/home/runner/my_ssh_key.pub" \
-            --assign-public-ip true \
-            --display-name "oracle-arm-vps" \
-            --wait-for-state RUNNING \
-            --max-wait-seconds 600 2>&1 || true)
-
-          echo "log_data<<EOF" >> $GITHUB_OUTPUT
-          echo "$OCI_OUTPUT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-          echo "=== OCI OUTPUT ==="
-          echo "$OCI_OUTPUT"
-
-          if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "RUNNING"'; then
-            printf '%s_%s\n' VM CREATED_CONFIRMED
-            echo "Success! Instance is RUNNING."
-            exit 0
-          elif echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
-            printf '%s_%s\n' VM CREATED_CONFIRMED
-            echo "Instance PROVISIONING — will become RUNNING shortly."
-            exit 0
-          elif echo "$OCI_OUTPUT" | grep -qi "out of host capacity"; then
-            echo "Out of capacity — will retry in next run."
-            exit 1
-          elif echo "$OCI_OUTPUT" | grep -qi "TooManyRequests\|throttl"; then
-            echo "Rate limited — will retry in next run."
-            exit 1
-          else
-            echo "Error: Unknown response. Check logs."
-            exit 1
-          fi
-
-      - name: Report outcome
+      - name: Configure OCI CLI
         run: |
-          if [ "${{ steps.create_vm.outcome }}" = "success" ]; then
-            echo "✅ VM CREATED SUCCESSFULLY!"
-            echo "Instance is running in Oracle Cloud."
-          else
-            echo "❌ Attempt failed — will retry in 10 minutes."
-          fi
+          set -euo pipefail
+          mkdir -p ~/.oci
+          printf '%s' "$OCI_CLI_KEY_B64" | base64 --decode > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          {
+            echo "[DEFAULT]"
+            echo "user=$OCI_CLI_USER"
+            echo "tenancy=$OCI_CLI_TENANCY"
+            echo "fingerprint=$OCI_CLI_FINGERPRINT"
+            echo "key_file=~/.oci/oci_api_key.pem"
+            echo "region=$OCI_CLI_REGION"
+          } > ~/.oci/config
+          chmod 600 ~/.oci/config
+          printf '%s\n' "$SSH_PUBLIC_KEY" > /home/runner/my_ssh_key.pub
+
+      - name: Retry ARM capacity every 5 minutes
+        run: |
+          set -u
+          ATTEMPT=0
+          while true; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "=== ATTEMPT $ATTEMPT $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
+
+            OCI_OUTPUT=$(oci compute instance launch \
+              --compartment-id "$COMPARTMENT_ID" \
+              --availability-domain "$AD_NAME" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+              --subnet-id "$SUBNET_ID" \
+              --image-id "$IMAGE_ID" \
+              --ssh-authorized-keys-file /home/runner/my_ssh_key.pub \
+              --assign-public-ip true \
+              --display-name "oracle-arm-vps" \
+              --wait-for-state RUNNING \
+              --max-wait-seconds 120 2>&1 || true)
+
+            echo "$OCI_OUTPUT"
+
+            if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "RUNNING"'; then
+              printf '%s_%s\n' VM CREATED_CONFIRMED
+              echo "Success! Instance is RUNNING."
+              exit 0
+            fi
+
+            if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
+              printf '%s_%s\n' VM CREATED_CONFIRMED
+              echo "Instance PROVISIONING."
+              exit 0
+            fi
+
+            if echo "$OCI_OUTPUT" | grep -qi 'out of host capacity'; then
+              echo "Capacity unavailable. Waiting 300 seconds."
+              sleep 300
+            elif echo "$OCI_OUTPUT" | grep -qi 'TooManyRequests\|throttl'; then
+              echo "Rate limited. Waiting 600 seconds."
+              sleep 600
+            else
+              echo "Transient or configuration error. Waiting 900 seconds before retry."
+              sleep 900
+            fi
+          done
+
+      - name: Report
+        if: always()
+        run: echo "The persistent ARM capacity job finished or was stopped."
