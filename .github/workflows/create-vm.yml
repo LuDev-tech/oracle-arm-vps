@@ -2,7 +2,6 @@ name: Try to Create OCI VM
 
 on:
   workflow_dispatch:
-  # Backup trigger. The job itself loops every 5 minutes for nearly 6 hours.
   schedule:
     - cron: "0 */6 * * *"
 
@@ -63,6 +62,18 @@ jobs:
             ATTEMPT=$((ATTEMPT + 1))
             echo "=== ATTEMPT $ATTEMPT $(date -u '+%Y-%m-%d %H:%M:%S UTC') ==="
 
+            EXISTING_ID=$(oci compute instance list \
+              --compartment-id "$COMPARTMENT_ID" \
+              --display-name "oracle-arm-vps" \
+              --all \
+              --query 'data[0].id' \
+              --raw-output 2>/dev/null || true)
+            if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
+              printf '%s_%s\n' VM CREATED_CONFIRMED
+              echo "Existing oracle-arm-vps found: $EXISTING_ID"
+              exit 0
+            fi
+
             OCI_OUTPUT=$(oci compute instance launch \
               --compartment-id "$COMPARTMENT_ID" \
               --availability-domain "$AD_NAME" \
@@ -72,9 +83,7 @@ jobs:
               --image-id "$IMAGE_ID" \
               --ssh-authorized-keys-file /home/runner/my_ssh_key.pub \
               --assign-public-ip true \
-              --display-name "oracle-arm-vps" \
-              --wait-for-state RUNNING \
-              --max-wait-seconds 120 2>&1 || true)
+              --display-name "oracle-arm-vps" 2>&1 || true)
 
             echo "$OCI_OUTPUT"
 
