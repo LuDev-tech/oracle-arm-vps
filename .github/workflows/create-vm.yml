@@ -21,6 +21,8 @@ env:
   OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
   OCI_CLI_KEY_B64: ${{ secrets.OCI_CLI_KEY_B64 }}
   SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+  SUPPRESS_LABEL_WARNING: "True"
+  OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
 
 jobs:
   build-and-deploy:
@@ -122,7 +124,7 @@ jobs:
               done
             fi
 
-            # Use one stable retry token and preserve the command status.
+            # Preserve the OCI CLI exit status.
             set +e
             OCI_OUTPUT=$(oci compute instance launch \
               --compartment-id "$COMPARTMENT_ID" \
@@ -134,7 +136,6 @@ jobs:
               --ssh-authorized-keys-file /home/runner/my_ssh_key.pub \
               --assign-public-ip true \
               --display-name "oracle-arm-vps" \
-              --opc-retry-token "$RETRY_TOKEN" \
               --output json 2>&1)
             LAUNCH_RC=$?
             set -e
