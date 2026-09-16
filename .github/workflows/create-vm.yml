@@ -6,6 +6,10 @@ on:
     # Backup trigger away from the top of the hour; the job itself loops.
     - cron: "17 */6 * * *"
 
+permissions:
+  contents: read
+  actions: write
+
 concurrency:
   group: oracle-arm-vps-launch
   cancel-in-progress: false
@@ -21,6 +25,7 @@ env:
   OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
   OCI_CLI_KEY_B64: ${{ secrets.OCI_CLI_KEY_B64 }}
   SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+  GH_TOKEN: ${{ github.token }}
   SUPPRESS_LABEL_WARNING: "True"
   OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
 
@@ -78,9 +83,25 @@ jobs:
         run: |
           set -u
           ATTEMPT=0
-          RETRY_TOKEN="oracle-arm-vps-single-create"
+          START_EPOCH=$(date +%s)
+          CHAIN_LIMIT_SECONDS=18000
+
+          start_next_run() {
+            echo "Starting the next chained GitHub Actions run."
+            curl --fail-with-body -sS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/create-vm.yml/dispatches" \
+              -d '{"ref":"main"}'
+          }
 
           while true; do
+            ELAPSED=$(( $(date +%s) - START_EPOCH ))
+            if [ "$ELAPSED" -ge "$CHAIN_LIMIT_SECONDS" ]; then
+              start_next_run
+              echo "Chained next run and exiting before GitHub's six-hour limit."
+              exit 0
+            fi
             ATTEMPT=$((ATTEMPT + 1))
             NOW=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
             echo "=== ATTEMPT $ATTEMPT $NOW ==="
