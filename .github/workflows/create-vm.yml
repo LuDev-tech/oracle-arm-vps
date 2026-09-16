@@ -87,7 +87,7 @@ jobs:
 
             # Reconcile first. Never launch if the list operation itself failed.
             set +e
-            INSTANCES_JSON=$(oci compute instance list \
+            INSTANCES_JSON=$(timeout 60s oci compute instance list \
               --compartment-id "$COMPARTMENT_ID" \
               --display-name "oracle-arm-vps" \
               --all \
@@ -109,7 +109,7 @@ jobs:
             if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
               echo "Existing non-terminal instance found: $EXISTING_ID"
               for poll in $(seq 1 20); do
-                INSTANCE_JSON=$(oci compute instance get --instance-id "$EXISTING_ID" --output json 2>&1 || true)
+                INSTANCE_JSON=$(timeout 60s oci compute instance get --instance-id "$EXISTING_ID" --output json 2>&1 || true)
                 STATE=$(printf '%s' "$INSTANCE_JSON" | jq -r '.data["lifecycle-state"] // empty' 2>/dev/null || true)
                 echo "Existing instance state: $STATE"
                 if [ "$STATE" = "RUNNING" ]; then
@@ -126,7 +126,7 @@ jobs:
 
             # Preserve the OCI CLI exit status.
             set +e
-            OCI_OUTPUT=$(oci compute instance launch \
+            OCI_OUTPUT=$(timeout 120s oci compute instance launch \
               --compartment-id "$COMPARTMENT_ID" \
               --availability-domain "$AD_NAME" \
               --shape "VM.Standard.A1.Flex" \
@@ -145,7 +145,7 @@ jobs:
             if [ -n "$INSTANCE_ID" ]; then
               echo "Launch accepted: $INSTANCE_ID"
               for poll in $(seq 1 20); do
-                INSTANCE_JSON=$(oci compute instance get --instance-id "$INSTANCE_ID" --output json 2>&1 || true)
+                INSTANCE_JSON=$(timeout 60s oci compute instance get --instance-id "$INSTANCE_ID" --output json 2>&1 || true)
                 STATE=$(printf '%s' "$INSTANCE_JSON" | jq -r '.data["lifecycle-state"] // empty' 2>/dev/null || true)
                 echo "Instance state: $STATE"
                 if [ "$STATE" = "RUNNING" ]; then
