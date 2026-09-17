@@ -98,9 +98,13 @@ jobs:
           while true; do
             ELAPSED=$(( $(date +%s) - START_EPOCH ))
             if [ "$ELAPSED" -ge "$CHAIN_LIMIT_SECONDS" ]; then
-              start_next_run
-              echo "Chained next run and exiting before GitHub's six-hour limit."
-              exit 0
+              if start_next_run; then
+                echo "Chained next run and exiting before GitHub's six-hour limit."
+                exit 0
+              else
+                echo "Failed to chain next run; dispatch returned an error. Exiting."
+                exit 1
+              fi
             fi
             ATTEMPT=$((ATTEMPT + 1))
             NOW=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
