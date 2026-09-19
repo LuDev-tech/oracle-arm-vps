@@ -88,7 +88,7 @@ jobs:
 
           start_next_run() {
             echo "Starting the next chained GitHub Actions run."
-            gh workflow run create-vm.yml --ref main
+            gh workflow run create-vm.yml --ref main --repo "$GITHUB_REPOSITORY"
           }
 
           while true; do
