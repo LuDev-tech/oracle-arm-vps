@@ -1,0 +1,138 @@
+name: Create OCI AMD Micro VM (fallback)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Cada 30 minutos. Intenta crear hasta 2 VM.Standard.E2.1.Micro (Always Free).
+    # Fallback mientras ARM A1.Flex siga sin capacidad en Sao Paulo.
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-amd-launch
+  cancel-in-progress: false
+
+env:
+  COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+  SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+  OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+  OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+  OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+  OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+  OCI_CLI_KEY_B64: ${{ secrets.OCI_CLI_KEY_B64 }}
+  SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+  SUPPRESS_LABEL_WARNING: "True"
+  OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+
+jobs:
+  launch-amd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: ${{ runner.os }}-pip-oci-cli-v2
+
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          pip install --quiet oci-cli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure OCI CLI
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.oci
+          printf '%s' "$OCI_CLI_KEY_B64" | base64 --decode > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          openssl rsa -in ~/.oci/oci_api_key.pem -check -noout
+          {
+            echo "[DEFAULT]"
+            echo "user=$OCI_CLI_USER"
+            echo "tenancy=$OCI_CLI_TENANCY"
+            echo "fingerprint=$OCI_CLI_FINGERPRINT"
+            echo "key_file=~/.oci/oci_api_key.pem"
+            echo "region=$OCI_CLI_REGION"
+          } > ~/.oci/config
+          chmod 600 ~/.oci/config
+          printf '%s\n' "$SSH_PUBLIC_KEY" > /home/runner/my_ssh_key.pub
+
+      - name: Discover x86 Ubuntu image
+        id: img
+        run: |
+          set -euo pipefail
+          IMAGE_ID=$(timeout 90s oci compute image list \
+            --compartment-id "$COMPARTMENT_ID" \
+            --operating-system "Canonical Ubuntu" \
+            --operating-system-version "22.04" \
+            --shape "VM.Standard.E2.1.Micro" \
+            --lifecycle-state AVAILABLE \
+            --sort-by TIMECREATED --sort-order DESC --limit 1 \
+            --query 'data[0].id' --raw-output 2>/dev/null || true)
+          if [ -z "$IMAGE_ID" ] || [ "$IMAGE_ID" = "null" ]; then
+            echo "RESULT: IMAGE_NOT_FOUND"
+            exit 1
+          fi
+          echo "IMAGE_ID=$IMAGE_ID"
+          echo "image_id=$IMAGE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure up to 2 E2.1.Micro instances
+        run: |
+          set -uo pipefail
+          IMAGE_ID="${{ steps.img.outputs.image_id }}"
+          AD=$(timeout 60s oci iam availability-domain list \
+            --compartment-id "$COMPARTMENT_ID" \
+            --query 'data[0].name' --raw-output 2>/dev/null || true)
+          if [ -z "$AD" ]; then echo "RESULT: AD_NOT_FOUND"; exit 1; fi
+          echo "AD: $AD"
+
+          for SLOT in 1 2; do
+            NAME="oracle-amd-vps-$SLOT"
+            JSON=$(timeout 60s oci compute instance list \
+              --compartment-id "$COMPARTMENT_ID" --display-name "$NAME" \
+              --all --output json 2>&1) || { echo "RESULT: LIST_FAILED"; exit 1; }
+            ID=$(printf '%s' "$JSON" | jq -r '.data[] | select(.["lifecycle-state"] != "TERMINATED" and .["lifecycle-state"] != "TERMINATING") | .id' | head -n1)
+            if [ -n "$ID" ] && [ "$ID" != "null" ]; then
+              STATE=$(timeout 60s oci compute instance get --instance-id "$ID" --output json 2>/dev/null | jq -r '.data["lifecycle-state"] // empty')
+              IP=$(timeout 60s oci compute instance get --instance-id "$ID" --output json 2>/dev/null | jq -r '.data["public-ip"] // empty')
+              echo "$NAME exists: $STATE ip=${IP:-pending}"
+              continue
+            fi
+
+            echo "Launching $NAME"
+            OUT=$(timeout 120s oci compute instance launch \
+              --compartment-id "$COMPARTMENT_ID" \
+              --availability-domain "$AD" \
+              --shape "VM.Standard.E2.1.Micro" \
+              --subnet-id "$SUBNET_ID" \
+              --image-id "$IMAGE_ID" \
+              --ssh-authorized-keys-file /home/runner/my_ssh_key.pub \
+              --assign-public-ip true \
+              --display-name "$NAME" \
+              --output json 2>&1) || true
+
+            NEW_ID=$(printf '%s' "$OUT" | jq -r '.data.id // empty' 2>/dev/null || true)
+            if [ -n "$NEW_ID" ]; then
+              echo "RESULT: AMD_CREATED $NAME id=$NEW_ID"
+              for p in $(seq 1 10); do
+                ST=$(timeout 60s oci compute instance get --instance-id "$NEW_ID" --output json 2>/dev/null | jq -r '.data["lifecycle-state"] // empty')
+                PIP=$(timeout 60s oci compute instance get --instance-id "$NEW_ID" --output json 2>/dev/null | jq -r '.data["public-ip"] // empty')
+                echo "state=$ST ip=${PIP:-pending}"
+                if [ "$ST" = "RUNNING" ]; then echo "RESULT: AMD_RUNNING $NAME ip=$PIP"; break; fi
+                sleep 15
+              done
+            else
+              if echo "$OUT" | grep -qi 'out of host capacity\|LimitExceeded\|Quota'; then
+                echo "RESULT: AMD_CAPACITY_OR_QUOTA $NAME"
+                echo "$OUT" | tail -8
+              else
+                echo "RESULT: AMD_LAUNCH_ERROR $NAME"
+                echo "$OUT" | tail -8
+              fi
+            fi
+          done
+          exit 0
