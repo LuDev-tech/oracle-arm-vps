@@ -126,13 +126,8 @@ jobs:
                 sleep 15
               done
             else
-              if echo "$OUT" | grep -qi 'out of host capacity\|LimitExceeded\|Quota'; then
-                echo "RESULT: AMD_CAPACITY_OR_QUOTA $NAME"
-                echo "$OUT" | tail -8
-              else
-                echo "RESULT: AMD_LAUNCH_ERROR $NAME"
-                echo "$OUT" | tail -8
-              fi
+              echo "RESULT: AMD_LAUNCH_FAILED $NAME"
+              echo "$OUT" | tail -25
             fi
           done
           exit 0
