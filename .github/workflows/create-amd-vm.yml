@@ -5,7 +5,7 @@ on:
   schedule:
     # Cada 30 minutos. Intenta crear hasta 2 VM.Standard.E2.1.Micro (Always Free).
     # Fallback mientras ARM A1.Flex siga sin capacidad en Sao Paulo.
-    - cron: "*/30 * * * *"
+    - cron: "0 */2 * * *"
 
 permissions:
   contents: read

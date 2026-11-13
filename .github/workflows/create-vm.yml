@@ -241,8 +241,8 @@ jobs:
               exit 0
             fi
 
-            echo "All ADs failed for this attempt. Waiting 300 seconds."
-            sleep 300
+            echo "All ADs failed for this attempt. Waiting 900 seconds (anti-throttle)."
+            sleep 900
           done
 
       - name: Report
