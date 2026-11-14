@@ -103,6 +103,25 @@ jobs:
           AD_COUNT=$(wc -l < /tmp/available_ads.txt)
           echo "Total ADs: $AD_COUNT"
 
+      - name: Kick AMD fallback (schedule cron is unreliable)
+        run: |
+          set -u
+          AMD_URL="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/create-amd-vm.yml/dispatches"
+          for i in 1 2 3; do
+            if curl --fail-with-body -sS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$AMD_URL" \
+              -d '{"ref":"main"}'; then
+              echo "AMD fallback dispatched (try $i)."
+              exit 0
+            fi
+            echo "AMD dispatch try $i failed; retrying in 15s."
+            sleep 15
+          done
+          echo "WARNING: could not dispatch AMD fallback; the ARM retry loop continues."
+
       - name: Retry ARM capacity every 5 minutes
         run: |
           set -u
