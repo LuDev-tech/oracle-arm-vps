@@ -107,3 +107,20 @@ El patrón anterior — job de 5 horas **auto-encadenándose 24/7** — disparó
 **Solución aplicada (2026-11-13):** subir el intervalo de reintento ARM a 15 minutos (`sleep 900`) y bajar el cron del fallback AMD a cada 2 horas. Nunca correr dos workflows de lanzamiento con la misma frecuencia sobre la misma tenancy.
 
 **Lección:** si OCI devuelve 429, el problema es NUESTRO ritmo, no la capacidad. Espaciar antes de volver a intentar.
+
+---
+
+## INC-008 — el cron del fallback AMD no dispara (schedule poco fiable)
+
+**Sintoma:** el workflow `create-amd-vm.yml` (cron `0 */2 * * *`) no genero ningun run para los ciclos 02:00Z ni 04:00Z del 2026-11-14. El unico run programado del dia (00:41:31Z) llego 41 min tarde. Total historico del workflow: 3 runs (2 manuales).
+
+**Evidencia:** `gh api repos/LuDev-tech/oracle-arm-vps/actions/workflows/417618289/runs` -> runs `43535882633` (schedule, 00:41Z), `43487024781` y `43485661383` (workflow_dispatch). Nada a las 02:00Z/04:00Z.
+
+**Causa raiz:** depender solo de `schedule` en GitHub Actions. El scheduler demora o descarta ejecuciones; el encadenamiento por REST (`workflow_dispatch` via API) si es fiable: lleva ~38 h encadenando el workflow ARM cada 5 h sin fallar (`Chained next run and exiting` a las 02:50:21Z, run nuevo 5 s despues).
+
+**Solucion aplicada (2026-11-14 05:07Z, commit `3faab60`):** cada run ARM dispara `create-amd-vm.yml` una vez al arrancar (3 intentos, 15 s de espera, nunca fatal). El cron del AMD queda solo como respaldo.
+
+**Verificacion:** dispatch manual del mismo endpoint -> run `43559943310` creado con `head_sha=3faab60` y ejecutado; sus 2 lanzamientos E2.1.Micro fallaron con `InternalError: Out of host capacity` (05:09-05:11Z), o sea el mecanismo funciona y la capacidad sigue en cero.
+
+**Leccion:** si un path critico depende solo de `schedule`, asumir que se va a caer. Encadenar por API y verificar la existencia real del run, no el verde del YAML.
+
